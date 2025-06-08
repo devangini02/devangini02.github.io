@@ -1,0 +1,218 @@
+---
+title: "Appendix"
+output:
+  pdf_document: default
+  html_document: default
+date: "2024-01-29"
+---
+
+```{r}
+#Read data and necessary libraries
+setwd("C:/Users/vanal/Desktop/Uni Work/Causal Inference/Essay/Data")
+library(readxl)
+library(tidyverse)
+library(knitr)
+library(tidysynth)
+library(kableExtra)
+library(ggplot2) 
+library(RColorBrewer)
+
+#Data adjustment and reading (Source: Class Notes, OpenAI 2024, and Google)
+crproductivity <- read_excel("crproductivity.xls", sheet = "Productivity Hours", skip = 3)
+crproductivity <- crproductivity[-c(31:35),-c(1)]
+names(crproductivity)
+region_traffic_by_vehicle_type <- read.csv("region_traffic_by_vehicle_type.csv")
+tra0206 <- read.csv("tra0206.csv", skip = 4)
+crproductivity <- crproductivity %>% dplyr::rename(
+  "2004" = "hours...3",
+  "2005" = "hours...4",
+  "2006" = "hours...5",
+  "2007" = "hours...6",
+  "2008" = "hours...7",
+  "2009" = "hours...8",
+  "2010" = "hours...9",
+  "2011" = "hours...10",
+  "2012" = "hours...11",
+  "2013" = "hours...12",
+  "2014" = "hours...13",
+  "2015" = "hours...14",
+  "2016" = "hours...15",
+  "2017" = "hours...16",
+  "2018" = "hours...17",
+  "2019" = "hours...18",
+  "2020" = "hours...19",
+  "2021" = "hours...20",
+)
+cr_sub <- crproductivity[crproductivity$`City Region` %in% c("Greater London Authority","Greater Manchester Combined Authority","Liverpool City Region Combined Authority","West Midlands Combined Authority"),]
+cr_sub <- pivot_longer(
+  cr_sub, 
+  cols = -c("City Region"), 
+  names_to = "Year", 
+  values_to = "Value"
+)
+region_traffic_by_vehicle_type$Year <- as.numeric(region_traffic_by_vehicle_type$year)
+merged_data <- merge(cr_sub, region_traffic_by_vehicle_type, by = "Year")
+tra0206 <- tra0206 %>%
+  rename_with(~ sub("^X", "", .), .cols = starts_with("X"))
+tra0206 <- tra0206 %>%
+  mutate(across(-c(1:2), as.character)) %>%
+  pivot_longer(
+    cols = -c(1:2), 
+    names_to = "Year", 
+    values_to = "Value") 
+final_data <- merge(merged_data, tra0206, by = "Year")
+final_sub <- final_data[final_data$`City Region` %in% c("Greater London Authority","Greater Manchester Combined Authority","Liverpool City Region Combined Authority","West Midlands Combined Authority"),]
+final_sub <- final_sub %>% 
+  distinct(`City Region`, .keep_all = TRUE)
+final_data$region_id <- factor(final_data$region_id)
+color_palette <- brewer.pal(n = length(unique(final_data$region_id)), name = "Set3")
+final_sub$Year <- as.numeric(as.character(final_sub$Year))
+final_sub <- final_sub %>% 
+  select(-Region, -`Former.Metropolitan.County`)
+
+#Plot of the labour productivity(source: Class notes)
+plot(x = cr_sub[cr_sub$`City Region` == "Greater London Authority",]$Year,
+     y = cr_sub[cr_sub$`City Region` == "Greater London Authority",]$Value,
+     type = "l",
+     xlab = "Year",
+     ylab = "Value",
+     col = "red",
+     lwd = 3,
+     ylim = range(cr_sub$Value, na.rm = TRUE)) +
+  lines(x = cr_sub[cr_sub$`City Region` == "Greater Manchester Combined Authority",]$Year,
+      y = cr_sub[cr_sub$`City Region` == "Greater Manchester Combined Authority",]$Value,
+      col = "blue") + 
+  lines(x = cr_sub[cr_sub$`City Region` == "Liverpool City Region Combined Authority",]$Year,
+      y = cr_sub[cr_sub$`City Region` == "Liverpool City Region Combined Authority",]$Value,
+      col = "green") + 
+  lines(x = cr_sub[cr_sub$`City Region` == "West Midlands Combined Authority",]$Year,
+      y = cr_sub[cr_sub$`City Region` == "West Midlands Combined Authority",]$Value,
+      col = "orange")+
+  abline(v = 2012, lty = 3)
+
+#Data adjustment (Source: OpenAI 2024)
+library(scales)
+crproductivity$city_numeric <- as.numeric(factor(crproductivity$`City Region`, levels = unique(crproductivity$`City Region`)))
+print(colnames(crproductivity)) # Print column names
+names(cr_sub) <- trimws(names(cr_sub)) # Remove leading and trailing whitespaces
+colnames(cr_sub) <- c("City", "Year", "Value") # Rename columns
+
+#Synthetic Control code (Source: Class notes and Author's calculations)
+cr_synth <- synthetic_control( # Generate the synthetic control
+  data = cr_sub,
+  outcome = Value,
+  unit = City,
+  time = Year,
+  i_unit = "Greater London Authority",
+  i_time = 2012,
+  generate_placebos = TRUE
+)
+cr_synth <- generate_predictor(cr_synth, time_window = 2004:2012,
+                                Value = mean(Value, na.rm=T)) # Generate the predictor
+cr_synth <- generate_weights(cr_synth, optimization_window = 2004:2012) 
+cr_synth <- generate_control(cr_synth) # Generate the synthetic control
+cr_y <- grab_synthetic_control(cr_synth) # Extract the synthetic control
+cr_y 
+cr_y_post_2012 <- subset(cr_y, time_unit > 2012) # Subset the data post 2012
+kable(cr_y_post_2012) # Print the data post 2012
+
+# Plot the synthetic control - synthetic labour productivity values
+ggplot(data = cr_y, aes(x = time_unit, y = synth_y)) + 
+  geom_line(aes(group=1)) +
+  labs(x = "Year", y = "Labour Productivity", subtitle = "Synthetic Labour Productivity Hours (London)") +
+  theme_minimal() 
+
+# Plot the synthetic control - real labour productivity values for comparison
+ggplot(data = cr_y, aes(x = time_unit, y = real_y)) + 
+  geom_line(aes(group=1)) +
+  labs(x = "Year", y = "Labour Productivity", subtitle = "Synthetic Labour Productivity Hours (London)") +
+  theme_minimal() 
+
+#confidence intervals - 95% confidence interval using formula for variance
+synth_var <- cr_y %>%
+  group_by(time_unit) %>%
+  summarise(synth_var = var(synth_y))
+synth_se <- sqrt(synth_var$synth_var)
+synth_y_lower <- cr_y$synth_y - 1.96 * synth_se
+synth_y_upper <- cr_y$synth_y + 1.96 * synth_se
+
+#Plot for the subset data 
+ggplot(data = cr_sub, aes(x = cr_sub$Year, y = Value)) +
+  geom_line() +  
+  labs(x = "Year", y = "Labour Productivity", subtitle = "London")
+```
+
+```{r}
+#Plot of distribution of the labour productivity values
+ggplot(merged_data, aes(x = Value, fill = region_id)) +
+  geom_density(alpha = 0.5) +  
+  scale_fill_manual(values = color_palette) +  
+  theme_minimal() + 
+  labs(title = "Distribution of Total Labour Productivity",
+       x = "Labour Productivity Hours",
+       y = "Density",
+       caption = "Source: ONS")  
+
+merged_data$Year <- as.numeric(as.character(merged_data$Year))
+merged_data <- na.omit(merged_data)
+
+merged_data %>% 
+  group_by(Region_name) %>% 
+  summarise(min_year = min(Year), max_year = max(Year)) %>% 
+  filter(!(2012 >= min_year & 2012 <= max_year))
+merged_data <- merged_data %>% arrange(Region_name, Year)
+
+#Plot (Source: OpenAI 2024) - Total Labour Productivity by Region
+p <- ggplot(merged_data, aes(x = Year, y = Value, group = Region_name, color = factor(Region_name))) +
+  geom_line() +
+  geom_point() + 
+  theme_minimal() +
+  scale_x_continuous(breaks = seq(min(merged_data$Year, na.rm = TRUE), max(merged_data$Year, na.rm = TRUE), by = 1)) +
+  scale_y_continuous(labels = scales::comma) +
+  theme(legend.title = element_blank(),
+        legend.position = "right",
+        axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
+
+p <- p + geom_vline(xintercept = 2012, linetype = "dashed", color = "black", linewidth = 0.5) + 
+  labs(title = "Total Labour Productivity by Region",
+       x = "Year",
+       y = "Labour Productivity Hours",
+       color = "Region") 
+print(p)
+
+#Test for difference in means (Source: Class Notes from Statistical Learning)
+other_regions <- merged_data %>%
+  filter(`City Region` != "Greater London Authority") %>%
+  group_by(Year) %>%
+  summarise(Combined_Value = sum(Value, na.rm = TRUE))
+london_data <- merged_data %>%
+  filter(`City Region` == "Greater London Authority") %>%
+  select(Year, London_Value = Value)
+comparison_data <- london_data %>%
+  left_join(other_regions, by = "Year")
+
+var_test <- var.test(other_regions$Combined_Value, london_data$London_Value)
+t_test <- t.test(other_regions$Combined_Value, london_data$London_Value)
+
+print(var_test)
+print(t_test)
+
+#Print test results (Source: OpenAI 2024)
+library(broom)
+tidy_t_test <- tidy(t_test)
+tidy_var_test <- tidy(var_test)
+print(tidy_t_test)
+print(tidy_var_test)
+
+mean_other <- mean(other_regions$Combined_Value)
+mean_ldn <- mean(london_data$London_Value)
+mean_other - mean_ldn
+
+#Plot the graph 
+ggplot(comparison_data, aes(x = Year)) +
+  geom_line(aes(y = London_Value, color = "London")) +
+  geom_line(aes(y = Combined_Value, color = "Other Regions")) +
+  labs(y = "Labour Productivity", color = "Region", subtitle = "London Labour Productivity vs. Combined Labour Productivity of other cities") +
+  theme_minimal() +
+  geom_vline(xintercept = 2012, linetype = "dashed", color = "black", linewidth = 0.5)
+```
